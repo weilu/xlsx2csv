@@ -24,7 +24,7 @@
 
 __author__ = "Dilshod Temirkhodjaev <tdilshod@gmail.com>"
 __license__ = "MIT"
-__version__ = "0.8"
+__version__ = "0.8.1"
 
 import csv, datetime, zipfile, sys, os, re, signal
 import xml.parsers.expat
@@ -172,6 +172,7 @@ class Xlsx2csv:
        include_sheet_pattern - only include sheets named matching given pattern
        exclude_sheet_pattern - exclude sheets named matching given pattern
        exclude_hidden_sheets - exclude hidden sheets
+       skip_hidden_rows - skip hidden rows
     """
 
     def __init__(self, xlsxfile, **options):
@@ -194,8 +195,10 @@ class Xlsx2csv:
         options.setdefault("ignore_formats", [''])
         options.setdefault("lineterminator", "\n")
         options.setdefault("outputencoding", "utf-8")
+        options.setdefault("skip_hidden_rows", True)
 
         self.options = options
+        self.ziphandle = None
         try:
             self.ziphandle = zipfile.ZipFile(xlsxfile)
         except (zipfile.BadZipfile, IOError):
@@ -215,8 +218,9 @@ class Xlsx2csv:
             self.shared_strings.escape_strings()
 
     def __del__(self):
-        # make sure to close zip file, ziphandler does have a close() method
-        self.ziphandle.close()
+        if self.ziphandle:
+            # make sure to close zip file
+            self.ziphandle.close()
 
     def getSheetIdByName(self, name):
         for s in self.workbook.sheets:
@@ -345,10 +349,11 @@ class Xlsx2csv:
                 sheet.set_merge_cells(self.options['merge_cells'])
                 sheet.set_scifloat(self.options['scifloat'])
                 sheet.set_ignore_formats(self.options['ignore_formats'])
+                sheet.set_skip_hidden_rows(self.options['skip_hidden_rows'])
                 if self.options['escape_strings'] and sheet.filedata:
                     sheet.filedata = re.sub(r"(<v>[^<>]+)&#10;([^<>]+</v>)", r"\1\\n\2",
                                             re.sub(r"(<v>[^<>]+)&#9;([^<>]+</v>)", r"\1\\t\2",
-                                                   re.sub(r"(<v>[^<>]+)&#13;([^<>]+</v>)", r"\1\\r\2", sheet.filedata)))
+                                                   re.sub(r"(<v>[^<>]+)&#13;([^<>]+</v>)", r"\1\\r\2", sheet.filedata.decode())))
                 sheet.to_csv(writer)
             finally:
                 sheet_file.close()
@@ -653,6 +658,7 @@ class Sheet:
         self.hyperlinks = {}
         self.mergeCells = {}
         self.ignore_formats = []
+        self.skip_hidden_rows = False
 
         self.colIndex = 0
         self.colNum = ""
@@ -679,6 +685,9 @@ class Sheet:
 
     def set_ignore_formats(self, ignore_formats):
         self.ignore_formats = ignore_formats
+
+    def set_skip_hidden_rows(self, skip_hidden_rows):
+        self.skip_hidden_rows = skip_hidden_rows
 
     def set_merge_cells(self, mergecells):
         if not mergecells:
@@ -891,7 +900,7 @@ class Sheet:
                     (name == 'v' or name == 'is') or (has_namespace and (name.endswith(':v') or name.endswith(':is')))):
             self.in_cell_value = True
             self.collected_string = ""
-        elif self.in_sheet and (name == 'row' or (has_namespace and name.endswith(':row'))) and ('r' in attrs) and not ('hidden' in attrs and attrs['hidden'] == '1'):
+        elif self.in_sheet and (name == 'row' or (has_namespace and name.endswith(':row'))) and ('r' in attrs) and not (self.skip_hidden_rows and 'hidden' in attrs and attrs['hidden'] == '1'):
             self.rowNum = attrs['r']
             self.in_row = True
             self.colIndex = 0
@@ -1108,6 +1117,8 @@ def main():
                         help="quoting - fields quoting in csv, 'none' 'minimal' 'nonnumeric' or 'all' (default: minimal)")
     parser.add_argument("-s", "--sheet", dest="sheetid", default=1, type=inttype,
                         help="sheet number to convert")
+    parser.add_argument("--include-hidden-rows", dest="include_hidden_rows", default=False, action="store_true",
+                        help="include hidden rows")
 
     if argparser:
         options = parser.parse_args()
@@ -1182,7 +1193,8 @@ def main():
         'merge_cells': options.merge_cells,
         'outputencoding': options.outputencoding,
         'lineterminator': options.lineterminator,
-        'ignore_formats': options.ignore_formats
+        'ignore_formats': options.ignore_formats,
+        'skip_hidden_rows': not options.include_hidden_rows
     }
     sheetid = options.sheetid
     if options.all:
